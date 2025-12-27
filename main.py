@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from pathlib import Path
 
 import requests
@@ -20,9 +21,10 @@ class Token:
     def __init__(self, file_path):
         self.file_path = file_path
         self.access_token = None
+        self.taken_at = None
+        self.expiring_at = None
 
         self.load()
-        self.validate()
 
     def load(self):
         print(f"Loading {self.file_path}...")
@@ -37,34 +39,44 @@ class Token:
         try:
             data = json.loads(file)
             self.access_token = data["access_token"]
+            self.taken_at = data["taken_at"]
+            self.expiring_at = data["expiring_at"]
         except Exception as e:
-            raise Exception(f"[{type(e).__name__}] {self.file_path}: invalid JSON")
+            raise Exception(f"{type(e).__name__} {self.file_path}: {e}")
+
+        self.validate()
 
     def authenticate(self):
-        print("Fetching new access_token...")
         credentials, err = get_api_credentials()
-        if err is not None or credentials is None:
+        if err is not None:
             raise Exception(f"Invalid API credentials: {err}")
 
         data, err = get_access_token(credentials)
-        if err is not None or data is None:
+        if err is not None:
             raise Exception(err)
 
         self.access_token = data["access_token"]
+        self.taken_at = int(time.time())
+        self.expiring_at = self.taken_at + data["expires_in"]
         self.write()
 
     def validate(self):
-        print("Validating token...")
-        data, err = validate_access_token(self.access_token)
-        if err is not None or data is None:
-            print(f"FAIL: {err}")
-            self.authenticate()
-            return
-        days_left = round(data["expires_in"] / (24 * 60 * 60))
-        print(f"The token is valid, expires in {days_left} days...")
+        now = time.time()
+        if self.expiring_at is not None and now > self.expiring_at:
+            _, err = validate_access_token(self.access_token)
+            if err is not None:
+                print(f"FAIL: {err}")
+                self.authenticate()
+                return
+
+        print(f"Valid token, expires at {time.ctime(self.expiring_at)}.")
 
     def write(self):
-        auth_dict = {"access_token": self.access_token}
+        auth_dict = {
+            "access_token": self.access_token,
+            "taken_at": self.taken_at,
+            "expiring_at": self.expiring_at
+        }
         err = write_file(self.file_path, auth_dict)
         if err is not None:
             raise Exception(err)
@@ -76,6 +88,8 @@ class Token:
 
 
 def validate_access_token(access_token):
+    print("Validating access_token...")
+
     url = BASE_URL + "/validate"
     headers = {"Authorization": "Bearer " + access_token}
 
@@ -92,6 +106,8 @@ def validate_access_token(access_token):
 
 
 def get_access_token(credentials):
+    print("Fetching new access_token...")
+
     url = BASE_URL + "/token"
     payload = {
         "client_id": credentials[0],
